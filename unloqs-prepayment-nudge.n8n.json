@@ -1,0 +1,310 @@
+{
+  "name": "Unloqs — Monthly Prepayment Nudge Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 1 * *"
+            }
+          ]
+        }
+      },
+      "id": "n1",
+      "name": "Monthly Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "rate_config",
+        "returnAll": true
+      },
+      "id": "n2",
+      "name": "Get Repo Rate",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        460,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Light decision/log node: flag whether the repo rate moved since last run\nconst c = $json;\nreturn [{ json: Object.assign({}, c, {\n  rate_changed: Number(c.current_repo_rate) !== Number(c.previous_repo_rate)\n}) }];\n"
+      },
+      "id": "n3",
+      "name": "Rate Delta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "v_active_loan_users",
+        "returnAll": true
+      },
+      "id": "n4",
+      "name": "Get Active Loans",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ===== CONFIG — adjust to taste =====\nconst PREPAY_STRATEGY = 'one_emi'; // 'one_emi' | 'percent' | 'fixed'\nconst PREPAY_PERCENT  = 0.05;      // used if 'percent' (5% of outstanding)\nconst PREPAY_FIXED    = 25000;     // used if 'fixed'\n\n// Indian currency formatting (math is done here; the LLM only writes copy)\nfunction inr(n) {\n  n = Math.round(Number(n) || 0);\n  return '\\u20B9' + n.toLocaleString('en-IN');\n}\nfunction inrLakh(n) {\n  const l = (Number(n) || 0) / 100000;\n  return '\\u20B9' + l.toFixed(2) + ' L';\n}\n\n// Rate context from the \"Get Repo Rate\" node (rate_config table)\nconst cfg = ($('Get Repo Rate').first() || { json: {} }).json || {};\nconst currentRate = Number(cfg.current_repo_rate);\nconst prevRate    = Number(cfg.previous_repo_rate);\nconst rateChanged = isFinite(currentRate) && isFinite(prevRate) && currentRate !== prevRate;\nconst rateDirection = rateChanged ? (currentRate > prevRate ? 'increased' : 'decreased') : 'unchanged';\n\n// This loan (one item)\nconst loan  = $input.item.json;\nconst P      = Number(loan.outstanding_principal);\nconst annual = Number(loan.annual_rate); // % per annum, e.g. 8.5\nconst EMI    = Number(loan.emi);\nconst i      = annual / 12 / 100;        // monthly rate\n\n// Remaining months from amortization (used if not supplied)\nfunction months(principal) {\n  if (i <= 0) return principal / EMI;\n  const ratio = (principal * i) / EMI;\n  if (ratio >= 1) return Infinity;       // EMI too small to ever amortize\n  return -Math.log(1 - ratio) / Math.log(1 + i);\n}\nconst N = Number(loan.remaining_months) > 0\n  ? Number(loan.remaining_months)\n  : Math.ceil(months(P));\n\n// Suggested prepayment\nlet X;\nif (PREPAY_STRATEGY === 'percent')      X = P * PREPAY_PERCENT;\nelse if (PREPAY_STRATEGY === 'fixed')   X = PREPAY_FIXED;\nelse                                    X = EMI;            // one extra EMI\nX = Math.max(1000, Math.round(X / 1000) * 1000);           // round to nearest 1000\nX = Math.min(X, P);                                        // never exceed outstanding\n\n// Impact of prepaying X now (EMI held constant -> tenure shortens)\nconst P2 = P - X;\nconst n2 = Math.ceil(months(P2));\nconst monthsSaved   = Math.max(0, N - n2);\nconst interestSaved = Math.max(0, Math.round(EMI * (N - n2) - X));\n\nconst facts = {\n  name: loan.full_name || 'there',\n  outstanding: inr(P),\n  suggested_prepayment: inr(X),\n  interest_saved: inrLakh(interestSaved),\n  months_saved: monthsSaved,\n  time_saved: Math.floor(monthsSaved / 12) + 'y ' + (monthsSaved % 12) + 'm',\n  repo_rate_status: rateDirection,\n  current_repo_rate: isFinite(currentRate) ? currentRate + '%' : 'n/a',\n};\n\nconst system = [\n  'You write short, warm, motivating home-loan prepayment nudges for Indian borrowers using the Unloqs app.',\n  'Tone: encouraging, concrete, never pushy or alarmist.',\n  'Use ONLY the figures provided — never invent numbers. Keep the Indian formatting (\\u20B9, lakhs).',\n  'Output ONLY valid JSON: {\"subject\": string, \"message\": string}. Message under 90 words.'\n].join(' ');\n\nconst user = 'Write a prepayment nudge from these facts:\\n' + JSON.stringify(facts, null, 2) +\n  '\\nIf repo_rate_status is \"decreased\", note that easing rates are a good moment to prepay; ' +\n  'if \"increased\", note prepaying reduces exposure to higher rates; ' +\n  'if \"unchanged\", keep it about momentum and progress.';\n\nconst openai_body = {\n  model: 'gpt-4o-mini',\n  temperature: 0.7,\n  response_format: { type: 'json_object' },\n  messages: [\n    { role: 'system', content: system },\n    { role: 'user', content: user }\n  ]\n};\n\nreturn {\n  json: {\n    user_id: loan.user_id,\n    email: loan.email,\n    phone: loan.phone || null,\n    channel: 'email',\n    suggested_prepayment: X,\n    interest_saved: interestSaved,\n    months_saved: monthsSaved,\n    rate_changed: rateChanged,\n    openai_body\n  }\n};\n"
+      },
+      "id": "n5",
+      "name": "Compute Impact",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.openai_body) }}",
+        "options": {}
+      },
+      "id": "n6",
+      "name": "Draft Nudge",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_OPENAI_CRED",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "let parsed = {};\ntry {\n  parsed = JSON.parse($json.choices[0].message.content);\n} catch (e) {\n  parsed = {\n    subject: 'A smart move on your home loan',\n    message: 'A small prepayment this month could shorten your loan and cut interest. Open Unloqs to see your personalised plan.'\n  };\n}\nconst src = $('Compute Impact').item.json;\nreturn { json: {\n  user_id: src.user_id,\n  email: src.email,\n  channel: src.channel,\n  subject: parsed.subject,\n  message: parsed.message,\n  suggested_prepayment: src.suggested_prepayment,\n  interest_saved: src.interest_saved,\n  months_saved: src.months_saved,\n  status: 'sent'\n}};\n"
+      },
+      "id": "n7",
+      "name": "Parse Nudge",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "nudges",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "user_id",
+              "fieldValue": "={{ $json.user_id }}"
+            },
+            {
+              "fieldId": "channel",
+              "fieldValue": "={{ $json.channel }}"
+            },
+            {
+              "fieldId": "subject",
+              "fieldValue": "={{ $json.subject }}"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "={{ $json.message }}"
+            },
+            {
+              "fieldId": "suggested_prepayment",
+              "fieldValue": "={{ $json.suggested_prepayment }}"
+            },
+            {
+              "fieldId": "interest_saved",
+              "fieldValue": "={{ $json.interest_saved }}"
+            },
+            {
+              "fieldId": "months_saved",
+              "fieldValue": "={{ $json.months_saved }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "={{ $json.status }}"
+            }
+          ]
+        }
+      },
+      "id": "n8",
+      "name": "Insert Nudge",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "nudges@yourdomain.com",
+        "toEmail": "={{ $('Parse Nudge').item.json.email }}",
+        "subject": "={{ $('Parse Nudge').item.json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $('Parse Nudge').item.json.message }}",
+        "options": {}
+      },
+      "id": "n9",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2000,
+        300
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_SMTP_CRED",
+          "name": "SMTP account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Monthly Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Repo Rate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Repo Rate": {
+      "main": [
+        [
+          {
+            "node": "Rate Delta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Delta": {
+      "main": [
+        [
+          {
+            "node": "Get Active Loans",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Active Loans": {
+      "main": [
+        [
+          {
+            "node": "Compute Impact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Impact": {
+      "main": [
+        [
+          {
+            "node": "Draft Nudge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Nudge": {
+      "main": [
+        [
+          {
+            "node": "Parse Nudge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Nudge": {
+      "main": [
+        [
+          {
+            "node": "Insert Nudge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Nudge": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}
