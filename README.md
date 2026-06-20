@@ -17,6 +17,8 @@ Monthly trigger
   → email the borrower (SMTP)
 ```
 
+<img width="1654" height="813" alt="image" src="https://github.com/user-attachments/assets/70cf35ca-98bc-4c01-8ca3-c2d38a2efb19" />
+
 The one design decision worth calling out: **the LLM never does arithmetic.** Every rupee figure, the lakh formatting, the amortisation math — all of it happens in the Code nodes. The model only writes the wording. That keeps the numbers correct and the cost negligible (~₹0.0004 per nudge), and it's the difference between a toy and something you'd actually run in production.
 
 ## Example
