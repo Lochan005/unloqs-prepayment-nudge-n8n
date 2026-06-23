@@ -1,6 +1,6 @@
 # Unloqs — Monthly Prepayment Nudge Engine
 
-An n8n workflow that sends Indian home-loan borrowers a personalised, monthly "you could prepay this much and save this much" nudge — automatically.
+An n8n workflow that sends Indian home-loan borrowers a personalised, monthly "you could prepay this much and save this much" nudge - automatically.
 
 I built it for [Unloqs](https://unloqs.com), the home-loan prepayment app I'm working on, to replace manual outreach. It reads each active loan from Supabase, calculates the real impact of a prepayment (interest saved, months shaved off the tenure) in code, asks an LLM to turn those numbers into a short motivating message, logs it, and emails it.
 
@@ -19,14 +19,14 @@ Monthly trigger
 
 <img width="1654" height="813" alt="image" src="https://github.com/user-attachments/assets/70cf35ca-98bc-4c01-8ca3-c2d38a2efb19" />
 
-The one design decision worth calling out: **the LLM never does arithmetic.** Every rupee figure, the lakh formatting, the amortisation math — all of it happens in the Code nodes. The model only writes the wording. That keeps the numbers correct and the cost negligible (~₹0.0004 per nudge), and it's the difference between a toy and something you'd actually run in production.
+The one design decision worth calling out: **the LLM never does arithmetic.** Every rupee figure, the lakh formatting, the amortisation math - all of it happens in the Code nodes. The model only writes the wording. That keeps the numbers correct and the cost negligible (~₹0.0004 per nudge), and it's the difference between a toy and something you'd actually run in production.
 
 ## Example
 
 For a ₹25,00,000 loan at 8.5% with a suggested ₹1,25,000 prepayment, the engine computes ~₹2.75 L saved and ~16 months off the tenure, then the model writes something like:
 
 > **Subject:** A smart move this month
-> You're ₹1,25,000 away from saving roughly ₹2.75 lakh in interest and finishing your loan about 16 months early. Small step, big difference — worth a look in Unloqs.
+> You're ₹1,25,000 away from saving roughly ₹2.75 lakh in interest and finishing your loan about 16 months early. Small step, big difference - worth a look in Unloqs.
 
 ## Stack
 
