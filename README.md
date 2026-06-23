@@ -1,4 +1,4 @@
-# Unloqs — Monthly Prepayment Nudge Engine
+# Unloqs - Monthly Prepayment Nudge Engine
 
 An n8n workflow that sends Indian home-loan borrowers a personalised, monthly "you could prepay this much and save this much" nudge - automatically.
 
